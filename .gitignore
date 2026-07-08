@@ -1,0 +1,75 @@
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ---- Vivado / Xilinx (RTL side) ----
+# Never commit generated project files or build products, only sources + tcl scripts.
+*.jou
+*.log
+*.str
+*.xpr
+*.bit
+*.bin
+*.ltx
+*.mmi
+*.dcp
+*.xsa
+*.rpt
+*.wdb
+*.vds
+*.pb
+.Xil/
+.metadata/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.gen/
+*.runs/
+*.sim/
+*.srcs/
+webtalk*
+usage_statistics_webtalk.html
+vivado_pid*.str
+vivado_pid*.debug
+
+# ---- cocotb / simulation ----
+sim_build/
+results.xml
+*.vcd
+*.fst
+*.wlf
+transcript
+
+# ---- FINN / Brevitas build artifacts ----
+ml/finn_build/**/output/
+ml/finn_build/**/*.onnx
+!ml/finn_build/**/*.template.onnx
+*.pth
+*.ckpt
+
+# ---- Data (never commit raw market data dumps) ----
+ml/data/raw/
+ml/data/*.csv
+ml/data/*.parquet
+
+# ---- Board bring-up binaries ----
+*.hwh
+*.bit.bin
+
+# ---- Large result artifacts (keep plots/tables, not raw dumps) ----
+benchmarks/**/*.raw
+docs/results/**/*.tmp
+
+ref/*.pdf
+*.pdf

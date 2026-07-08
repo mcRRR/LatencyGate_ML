@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Placeholder: fill in once cocotb testbenches exist under hardware/*/tb and verification/cocotb_tests.
+  rtl-tests:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "TODO: run cocotb tests"
+
+  # Placeholder: fill in once ml/ and software/ have Python unit tests.
+  python-tests:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "TODO: run pytest"
