@@ -73,3 +73,13 @@ docs/results/**/*.tmp
 
 ref/*.pdf
 *.pdf
+
+hardware/ax7a200b/xsim.dir/
+hardware/ax7a200b/vivado/
+.Xil/
+*.jou
+*.log
+*.wdb
+*.vcd
+*.pb
+__pycache__/
