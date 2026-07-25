@@ -83,3 +83,8 @@ hardware/ax7a200b/vivado/
 *.vcd
 *.pb
 __pycache__/
+
+# ---- ax7a200b bring-up test artifacts (regenerable via itch_tools.py) ----
+hardware/ax7a200b/*.csv
+hardware/ax7a200b/*.bin
+hardware/ax7a200b/dfx_runtime.txt
