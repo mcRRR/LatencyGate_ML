@@ -71,8 +71,9 @@
 
 当前下一阶段：
 
-1. 用 ITCH golden model 生成带时间戳和标签的 ML 数据集；
-2. 训练 baseline，标定 `QTY_SHIFT` 和输入量化范围；
-3. 完成 QAT/FINN 编译；
-4. 实现 Pynq Z1 `board_link_rx` 和 FINN glue logic；
-5. 完成双板链路、PCIe/XDMA、风控与订单出口。
+1. 用 `ml/data/build_itch_dataset.py` 在真实 ITCH 文件上生成特征数据；
+2. 定义时间 horizon/阈值并生成 buy/hold/sell 标签；
+3. 训练 baseline，标定 `QTY_SHIFT` 和输入量化范围；
+4. 完成 QAT/FINN 编译；
+5. 实现 Pynq Z1 `board_link_rx` 和 FINN glue logic；
+6. 完成双板链路、PCIe/XDMA、风控与订单出口。

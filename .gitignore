@@ -60,6 +60,7 @@ ml/finn_build/**/*.onnx
 
 # ---- Data (never commit raw market data dumps) ----
 ml/data/raw/
+ml/data/processed/
 ml/data/*.csv
 ml/data/*.parquet
 
