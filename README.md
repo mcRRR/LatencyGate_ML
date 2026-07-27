@@ -1,6 +1,9 @@
 # LatencyGate-ML
 
-低延迟行情处理 + FPGA 加速 ML 推理系统。完整背景、架构原理和分阶段目标见 [PROJECT_PLAN.md](PROJECT_PLAN.md) —— 本文件只做导航和当前进度快照，避免和主计划文档重复维护。
+低延迟行情处理 + FPGA 加速 ML 推理系统。背景、架构原理和分阶段目标见
+[PROJECT_PLAN.md](PROJECT_PLAN.md)；当前 handler 的协议、数值和接口标准以
+[docs/handler_contract.md](docs/handler_contract.md) 为准。本文件只做导航和当前
+进度快照。
 
 ## 数据流程图
 
@@ -9,11 +12,13 @@
 ## 仓库结构
 
 ```
-├── PROJECT_PLAN.md          # 完整背景、分工原则、分阶段目标（权威文档）
+├── PROJECT_PLAN.md          # 完整背景、分工原则和阶段规划
 ├── docs/
+│   ├── handler_contract.md  # 当前 ITCH50 handler 与六维特征的权威合同
 │   ├── architecture.md      # 架构图 + 当前实现状态
-│   ├── protocol_spec.md     # FM24（仿ITCH）消息格式规格
-│   ├── board_link_spec.md   # 板间链路协议（PMOD 接口定义）
+│   ├── protocol_spec.md     # 历史 FM24 原型规格
+│   ├── board_link_spec.md   # 当前 15 字节板间帧格式
+│   ├── legacy_fm24_feature_spec.md  # 历史 FM24/int32 特征草案
 │   └── results/             # 延迟报告、帕累托曲线、资源利用率报告
 ├── hardware/
 │   ├── ax7a200b/
@@ -49,23 +54,25 @@
 
 ## 当前进度（已有代码）
 
-`hardware/ax7a200b/` 下已经有一版可用的 feed handler 流水线，对应 PROJECT_PLAN 阶段 1-2 的部分内容：
+`hardware/ax7a200b/rtl/ITCH50_parser/` 已形成当前主 handler：
 
-| 文件 | 作用 |
+| 模块 | 状态 |
 |---|---|
-| `rtl/fm24_pkg.sv` | 自定义 24 字节仿 ITCH 消息格式（FM24）的类型定义、消息/校验/TOB struct |
-| `rtl/msg_parser.sv` | 流式解析 FM24 消息 |
-| `rtl/book_update.sv` | 用 BRAM 价格窗口维护买卖盘状态 |
-| `rtl/priority_encoder.sv` | 从 bid/ask mask 找最优价位地址 |
-| `rtl/tob_tracker.sv` | 汇总输出 top-of-book |
-| `rtl/latency_counter.sv` | 输入→TOB 更新的周期数延迟统计 |
-| `rtl/top.sv` | 上面几个模块的顶层拼接 |
-| `rtl/feed_handler.sv` | 把 `top` 封装成 AXI4-Stream + AXI4-Lite IP（可打包进 Vivado Block Design） |
-| `src/fm24.py` | FM24 消息的 Python 编解码模型，和 RTL 的 struct 定义一一对应 |
-| `src/test_feed.py` | **Pynq Z1** 上的 bring-up 驱动脚本，通过 AXI DMA 灌入消息、读 AXI-Lite 寄存器验证 TOB/延迟 |
+| NASDAQ ITCH 5.0 parser | 已实现，支持主要订单簿事件和单股票过滤 |
+| order lookup + price-level book | 已实现，包含直接映射订单表和固定价格窗口 |
+| priority encoder + TOB tracker | 已实现，包含 back-to-back 更新修复 |
+| 六维 feature engine | 已实现，输出 6 × signed int16 |
+| board-link TX | 已实现，输出 15 字节带序号/XOR 的大端帧 |
+| Python bit-exact golden model | 已实现，入口为 `hardware/ax7a200b/src/itch_tools.py` |
+| RTL testbench | 已覆盖 parser、lookup、book、TOB、feature、board-link 和 UART |
+| AX7A200B UART bring-up | 已有顶层、约束、Vivado Tcl 和主机脚本 |
 
-**注意**：这版 `feed_handler` 是先在 **Pynq Z1**（有 PS，AXI-Lite/DMA 现成好调试）上做 bring-up 验证的，最终目标平台是 **AX7A200B**（无 PS，只能经 PCIe/XDMA）。等这套逻辑验证稳定后，需要把 AXI-Lite 控制面换成 PCIe/XDMA 寄存器接口才能移植到 AX7A200B 上——这是后续要做的适配工作，不是简单复制。
+旧 FM24 流水线已移动到 `hardware/ax7a200b/rtl/fm24_parser/`，只作为历史原型保留。
 
-尚未开始：`feature_extract`、`risk_core`、`order_encoder`、`pcie_xdma`、`board_link_tx`（AX7A200B 侧），以及 `board_link_rx`、FINN overlay（Pynq 侧），和 `ml/`、`software/`、`verification/`、`benchmarks/` 下的全部内容。
+当前下一阶段：
 
-
+1. 用 ITCH golden model 生成带时间戳和标签的 ML 数据集；
+2. 训练 baseline，标定 `QTY_SHIFT` 和输入量化范围；
+3. 完成 QAT/FINN 编译；
+4. 实现 Pynq Z1 `board_link_rx` 和 FINN glue logic；
+5. 完成双板链路、PCIe/XDMA、风控与订单出口。

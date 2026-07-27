@@ -1,4 +1,9 @@
-"""Python reference for Feature Vector v0."""
+"""Legacy FM24 Feature Vector v0 reference.
+
+The active ITCH50 handler contract uses the bit-exact Golden model in
+``hardware/ax7a200b/src/itch_tools.py``. Do not use this module to generate
+training data for the active hardware pipeline.
+"""
 
 from collections import deque
 from dataclasses import dataclass
@@ -42,7 +47,7 @@ class TopOfBook:
 
 @dataclass(frozen=True)
 class FeatureVector:
-    """Board-link Feature Vector v0 order."""
+    """Legacy FM24 Feature Vector v0 order."""
 
     spread: int
     tob_imbalance: int
