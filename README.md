@@ -1,79 +1,219 @@
 # LatencyGate-ML
 
-低延迟行情处理 + FPGA 加速 ML 推理系统。背景、架构原理和分阶段目标见
-[PROJECT_PLAN.md](PROJECT_PLAN.md)；当前 handler 的协议、数值和接口标准以
-[docs/handler_contract.md](docs/handler_contract.md) 为准。本文件只做导航和当前
-进度快照。
+**A full-RTL NASDAQ ITCH 5.0 feed handler on an Artix-7 FPGA** — byte-serial
+protocol decode, order-book reconstruction, and six fixed-point microstructure
+features, running on real hardware against real exchange capture data.
 
-## 数据流程图
+`100 MHz timing met (WNS +0.333 ns)` · `0 of 740 DSP slices` · `9.4 % LUT` ·
+`15 testbenches, 275 assertions, 0 failures` · `bit-exact Python golden model`
 
-**AX7A200B**（纯 PL，无 PS）跑行情接入 → 协议解析 → 订单簿重构 → 特征提取 → 风控 → 订单出口的全 RTL 流水线；**Pynq Z1**（PS+PL）的 PL 侧跑 FINN 编译的量化神经网络做推理决策；两板之间走板间直连链路（不经以太网/Linux 网络栈）；主机经 PCIe 做配置和监控，不在延迟关键路径上。
+The longer-term goal is a two-board system that pairs this handler with an
+FINN-compiled quantised neural network on a Pynq Z1 — see
+[PROJECT_PLAN.md](PROJECT_PLAN.md). **This repository's working, measured
+component is the feed handler**, and that is what the numbers above describe.
 
-## 仓库结构
+---
+
+## What it does
 
 ```
-├── PROJECT_PLAN.md          # 完整背景、分工原则和阶段规划
-├── docs/
-│   ├── handler_contract.md  # 当前 ITCH50 handler 与六维特征的权威合同
-│   ├── architecture.md      # 架构图 + 当前实现状态
-│   ├── protocol_spec.md     # 历史 FM24 原型规格
-│   ├── board_link_spec.md   # 当前 15 字节板间帧格式
-│   ├── legacy_fm24_feature_spec.md  # 历史 FM24/int32 特征草案
-│   └── results/             # 延迟报告、帕累托曲线、资源利用率报告
-├── hardware/
-│   ├── ax7a200b/
-│   │   ├── rtl/             # 行情解析、LOB引擎、特征提取、风控、订单出口、PCIe、板间发送
-│   │   ├── src/             # 板级 bring-up 脚本、Python 消息模型（fm24.py）
-│   │   ├── tb/               # 各模块 testbench
-│   │   ├── constraints/      # XDC
-│   │   └── build/            # Vivado tcl 构建脚本（不提交生成的工程本体）
-│   └── pynq_z1/
-│       ├── rtl/board_link_rx/  # 接收特征向量，接入 FINN 输入的 glue logic
-│       ├── overlay/            # FINN 生成的 bitstream + driver
-│       ├── constraints/
-│       └── build/
-├── ml/
-│   ├── data/                 # 数据获取脚本（不放原始数据，见 .gitignore）
-│   ├── notebooks/             # EDA
-│   ├── models/{baseline_linear, quantized_nn}/
-│   ├── training/               # 含 QAT
-│   ├── quantization/           # 位宽扫描实验
-│   └── finn_build/             # FINN 编译构建脚本
-├── software/
-│   ├── host_pcie_driver/      # 主机经 PCIe 与 AX7A200B 通信
-│   ├── market_simulator/       # 合成/回放行情流量生成器
-│   └── backtest/                # 回测框架
-├── verification/
-│   ├── cocotb_tests/
-│   └── coverage_reports/
-├── benchmarks/
-│   ├── latency_measurement/
-│   └── pareto_results/
-└── .github/workflows/          # CI：cocotb 测试 + python 单元测试
+ITCH bytes ──► itch_parser ──► event_dispatcher ──┬──► order_lookup   (resolve id → price/side)
+                                                   └──► book_update    (price-level book, BRAM)
+                                                              │
+                                                     occupancy masks
+                                                              ▼
+                                                    priority_encoder   (radix-32 tree, 2 cyc)
+                                                              ▼
+                                                      tob_tracker      (top-of-book snapshot)
+                                                              ▼
+                                                    feature_engine     (6 × int16, 1 cycle)
+                                                              ▼
+                                                    board_link_tx      (15-byte framed stream)
 ```
 
-## 当前进度（已有代码）
+The pipeline decodes NASDAQ's `[2-byte length][body]` framing, extracts fields
+for the seven book-affecting message types (`A F E C X D U`), maintains an
+aggregate price-level book in block RAM, tracks top-of-book, and emits a
+six-dimensional fixed-point feature vector per book-changing event:
+spread, top-of-book imbalance, order-flow imbalance, EMA deviation, momentum,
+and trade flow.
 
-`hardware/ax7a200b/rtl/ITCH50_parser/` 已形成当前主 handler：
+A separate diagnostic channel reports seven pipeline counters over the same
+link, because on a device with no processor and no debugger, counters are the
+debugger.
 
-| 模块 | 状态 |
+---
+
+## Results
+
+Full detail, including how to reproduce every figure: **[docs/results.md](docs/results.md)**
+
+### Timing — 100 MHz met on `xc7a200tfbg484-2`
+
+| Metric | Value |
 |---|---|
-| NASDAQ ITCH 5.0 parser | 已实现，支持主要订单簿事件和单股票过滤 |
-| order lookup + price-level book | 已实现，包含直接映射订单表和固定价格窗口 |
-| priority encoder + TOB tracker | 已实现，包含 back-to-back 更新修复 |
-| 六维 feature engine | 已实现，输出 6 × signed int16 |
-| board-link TX | 已实现，输出 15 字节带序号/XOR 的大端帧 |
-| Python bit-exact golden model | 已实现，入口为 `hardware/ax7a200b/src/itch_tools.py` |
-| RTL testbench | 已覆盖 parser、lookup、book、TOB、feature、board-link 和 UART |
-| AX7A200B UART bring-up | 已有顶层、约束、Vivado Tcl 和主机脚本 |
+| WNS / TNS (setup) | **+0.333 ns** / 0.000 ns |
+| WHS / THS (hold) | +0.068 ns / 0.000 ns |
+| Failing endpoints | **0 of 38,013** |
 
-旧 FM24 流水线已移动到 `hardware/ax7a200b/rtl/fm24_parser/`，只作为历史原型保留。
+The critical path was the price→address divide in `book_update`, initially at
+**WNS −0.055 ns**. Splitting it into two pipeline stages — bounds check and
+subtract, then the divide alone — both isolated the divider *and* narrowed it
+from 32 bits to 17, because establishing in-window-ness first bounds the
+difference. That is the change that closed timing.
 
-当前下一阶段：
+### Resources
 
-1. 用 `ml/data/build_itch_dataset.py` 在真实 ITCH 文件上生成特征数据；
-2. 定义时间 horizon/阈值并生成 buy/hold/sell 标签；
-3. 训练 baseline，标定 `QTY_SHIFT` 和输入量化范围；
-4. 完成 QAT/FINN 编译；
-5. 实现 Pynq Z1 `board_link_rx` 和 FINN glue logic；
-6. 完成双板链路、PCIe/XDMA、风控与订单出口。
+| Resource | Used | Available | Util |
+|---|---|---|---|
+| Slice LUTs | 12,577 | 133,800 | 9.40 % |
+| Slice Registers | 6,211 | 267,600 | 2.32 % |
+| Block RAM tiles | 58 | 365 | 15.89 % |
+| **DSP slices** | **0** | 740 | **0.00 %** |
+
+**Zero DSPs is the number worth pausing on.** Every feature is computed with
+adds, subtracts and shifts — no multiplier, no divider anywhere in the feature
+path. Three decisions make that possible: prices are carried as *window tick
+indices* rather than raw price words (so differences are already in ticks),
+imbalance is defined as a difference rather than a ratio (a ratio needs a
+divider), and the EMA coefficient is 1/16 so its update is a pure arithmetic
+shift. The utilisation report proves the property rather than the
+documentation claiming it.
+
+### Verification
+
+15 unit testbenches, **275 assertions, 0 failures**, one command:
+
+```bash
+cd hardware/ax7a200b && bash tb/run_all_tb.sh
+```
+
+Two of those testbenches have been validated by **mutation testing** —
+reverting the RTL fix and confirming the test actually fails. An assertion
+never observed to fail is not evidence that it works.
+
+### Latency
+
+Core-only latency is **analytical (~18 cycles ≈ 180 ns for an Execute), not yet
+measured on hardware.** The measurement instrument
+(`rtl/ITCH50_parser/latency_probe.sv`) is written and unit-verified but not yet
+integrated. [docs/results.md §5](docs/results.md#5-latency) states the exact
+measurement definition and the remaining work.
+
+This matters because the bring-up transport is a 1 Mbaud UART at 10 µs per
+byte — roughly **three orders of magnitude slower than the core**. Any
+end-to-end figure from this bitstream would measure the UART, not the feed
+handler, so the probe brackets the core explicitly and separately records the
+transport interval so both can be reported from the same run.
+
+---
+
+## Design decisions worth reading about
+
+| Decision | Why |
+|---|---|
+| **Radix-32 tree priority encoder** | The original 1024-way ripple chain was a combinational carry through 1024 stages. The tree evaluates 32 leaves in parallel, then selects among 32 group flags, across 2 pipeline stages. The leaf is `mask & (~mask + 1)` — two gates — because finding a set *bit* is not the same problem as comparing *values*, which is why a comparator tree would be the wrong structure here. |
+| **Split address divide** | See timing above. |
+| **Occupancy mask as source of truth** | Block RAM contents cannot be reset — there is no per-cell reset wiring, only writes. So a 1-bit-per-level occupancy mask (32× smaller, affordable in flip-flops, and therefore resettable) gates every read: mask clear ⇒ effective quantity zero, whatever stale bits remain in memory. The mask was needed by the priority encoder anyway, so one structure serves two purposes. |
+| **Top-of-book latch at t+2** | The encoder's outputs are live wires. The original code launched reads at t+2 but re-sampled those wires at t+4 to assemble the snapshot. A Replace fires delete-then-insert ~5 cycles apart — inside that window — so update #2's address could pair with update #1's in-flight quantity, producing an internally inconsistent snapshot no single-update test would catch. |
+| **Replace decomposed in the dispatcher** | `order_lookup` has deliberately no `OP_REPLACE`. `U` becomes a delete on the old id (which also recovers the side, absent from the wire) plus an insert of the new one, keeping all cross-module protocol logic in exactly one place. |
+| **Drop-oldest on the output** | The pipeline back-pressures upstream all the way to the input FIFO, but the output refuses to queue: a newer feature vector replaces a pending one and increments `drop_count`. For a decision engine a stale snapshot has negative value — a hardware choice justified by a trading argument. |
+
+---
+
+## Running it
+
+**Simulation** (needs Vivado's `xsim`; located automatically, or set `VIVADO_BIN`):
+
+```bash
+cd hardware/ax7a200b && bash tb/run_all_tb.sh
+```
+
+**Build the bitstream from source** — no project files are committed:
+
+```bash
+cd hardware/ax7a200b && vivado -mode batch -source create_vivado_project.tcl
+```
+
+then `launch_runs synth_1 -jobs 8` / `launch_runs impl_1 -jobs 8`.
+
+**On hardware**: calibrate for the instrument and trading day first, since
+`stock_locate` is assigned daily and must never be hard-coded across days:
+
+```bash
+python hardware/ax7a200b/src/itch_tools.py calibrate <itch-file> --ticker AAPL
+```
+
+Then set the parameters on `top_board`, rebuild, and replay a capture over the
+USB-UART at 1 Mbaud with `src/uart_feed.py`.
+
+---
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [docs/handler_contract.md](docs/handler_contract.md) | **Authoritative.** Protocol, feature definitions, numeric semantics. Anything that contradicts it is a bug. |
+| [docs/results.md](docs/results.md) | Measured timing, resources, verification; latency methodology |
+| [docs/parameters.md](docs/parameters.md) | Every parameter, classified by what breaks when it changes |
+| [docs/module_ports.md](docs/module_ports.md) | Port-level reference for all modules |
+| [docs/architecture.md](docs/architecture.md) | Why the design is shaped this way |
+| [docs/board_link_spec.md](docs/board_link_spec.md) | 15-byte inter-board frame format |
+| [PROJECT_PLAN.md](PROJECT_PLAN.md) | Long-term two-board system plan and division of labour |
+
+`docs/protocol_spec.md` and `docs/legacy_fm24_feature_spec.md` describe the
+superseded FM24 prototype in `rtl/fm24_parser/`, kept for history only.
+
+---
+
+## Scope
+
+**Implemented and measured:** ITCH 5.0 parsing, order lookup, price-level book,
+top-of-book tracking, six-feature extraction, frame serialisation, diagnostic
+read-back, UART bring-up on real hardware, bit-exact Python golden model.
+
+**Not implemented:** Ethernet MAC/PHY, PCIe/XDMA, risk core, order-entry
+encoder, the physical board-to-board link (UART currently substitutes for it),
+and any ML inference in hardware. The FINN accelerator, the Pynq Z1 receive
+path, and the training pipeline under `ml/` are planned work, not results.
+
+The handler processes **one instrument** (`FILTER_LOCATE`) within a
+**1024-tick price window**, both calibrated per trading day.
+
+---
+
+## Repository layout
+
+<details>
+<summary>Expand</summary>
+
+```
+hardware/ax7a200b/
+  rtl/ITCH50_parser/     active handler: parser, dispatcher, lookup, book,
+                         encoder, tob tracker, features, board link, probe
+    io/                  UART, FIFO, arbiter, status reporter, board top
+    priority_encoder_v2/ radix tree encoder
+  rtl/fm24_parser/       superseded prototype, history only
+  tb/                    14 testbenches + run_all_tb.sh + run_tb.sh
+  src/                   itch_tools.py (golden model), uart_feed.py (host)
+  constraints/           XDC
+hardware/pynq_z1/        planned: board_link_rx, FINN overlay
+ml/                      dataset builder, features, notebooks; training TBD
+software/                planned: host driver, market simulator, backtest
+docs/                    see table above
+```
+
+</details>
+
+## Collaboration
+
+Two developers: hardware (`hardware/`) and ML (`ml/`, `software/`). Because
+those trees barely intersect, branches are cut **per module, not per person**
+(`feature/hw_diagnostics`, `feature/feed_handler`), merged into `main` by PR.
+
+Changes touching a shared interface — the feature vector layout, the frame
+format, `QTY_SHIFT`, `TABLE_BITS` — require review from both sides, because
+[handler_contract.md](docs/handler_contract.md) §7 mandates that the document,
+the RTL, the golden model, the testbenches, and the ML dataset version all move
+in the same commit. Generated artefacts (Vivado projects, bitstreams, FINN
+intermediates) are never committed; everything is rebuilt from source.
