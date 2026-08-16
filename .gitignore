@@ -94,3 +94,9 @@ PROJECT_PLAN.md
 PROJECT_PLAN.md
 PROJECT_PLAN.md
 PROJECT_PLAN.md
+
+# ---- JVM / Vivado crash dumps (regenerated on every crash) ----
+hs_err_pid*
+*.dmp
+javacore.*
+replay_pid*

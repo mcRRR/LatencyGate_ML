@@ -1,0 +1,3 @@
+*.ipynb linguist-documentation
+docs/** linguist-documentation
+hardware/ax7a200b/rtl/fm24_parser/** linguist-vendored
