@@ -7,7 +7,7 @@ capture data.
 
 `100 MHz met · WNS +0.333 ns` · `0 of 740 DSP slices` · `9.4 % LUT` ·
 `15 testbenches, 275 assertions, 0 failures` ·
-**`RTL ≡ golden model, bit-exact over 877,032 feature values`**
+**`RTL ≡ golden model ≡ silicon`** · `core latency 153 ns measured on-chip`
 
 ---
 
@@ -34,6 +34,15 @@ and every number on this page describes only that.
 
 The handler processes **one instrument** within a **1024-tick price window**,
 both calibrated per trading day.
+
+**A known limitation, stated plainly:** on the 50k AAPL capture, **32 % of
+book-affecting updates fall outside that price window** and are counted and
+dropped (`oow = 15,401` of 47,879). A 1024-tick window spans about $10.24 and
+AAPL simply moved further than that within the sample. This does not affect
+correctness — the RTL, the model and the silicon all agree on exactly which
+updates to drop — but it does mean the book is a partial view. Widening it is a
+parameter change (`WINDOW_SIZE` is a power-of-two knob, 2048 and 4096 both
+build and meet timing) at a roughly linear cost in BRAM and encoder area.
 
 ---
 
@@ -163,13 +172,38 @@ Every diagnostic counter agrees independently as well — book-affecting message
 count, out-of-window drops, lookup misses, parse errors, dropped frames, bad
 checksums.
 
-Note that this is a **simulation-vs-model** result: two independent
-implementations of the same specification, run on a PC. It says nothing about
-the silicon. An archived UART capture from an earlier board session happens to
-be byte-identical to the simulation output on the small dataset, which is
-encouraging, but that file has no recorded provenance and predates the current
-bitstream — so it is not cited as evidence here. Confirming the FPGA matches is
-a separate, still-outstanding step.
+### …and the silicon agrees too
+
+The 50k capture was then replayed over UART into the AX7A200B and the returned
+frames diffed against the same golden model:
+
+```
+sent 1716664 bytes (50000 messages)
+received 31994 frames in 19.28s   (decoder rejected 0 bad-sync bytes)
+FPGA counters: msg=50000 unknown=2120 filtered=0 miss=746 oow=15401 drop=0 parse_err=0
+golden compare: 31994 frames checked, 0 field mismatches
+```
+
+Every counter matches the simulation exactly:
+
+| | RTL simulation | **Silicon** |
+|---|---|---|
+| messages | 50,000 | **50,000** |
+| unknown types | 2,120 | **2,120** |
+| order-table misses | 746 | **746** |
+| out-of-window drops | 15,401 | **15,401** |
+| dropped frames / parse errors | 0 / 0 | **0 / 0** |
+| frames emitted | 31,994 | **31,994** |
+| **feature mismatches vs golden** | **0** | **0** |
+
+So the same 191,964 feature values are produced identically by three
+independent things: the RTL in simulation, a Python model written from the
+specification, and an FPGA. That includes the awkward paths — 551 Replace
+messages, 746 order-table evictions, 15,401 out-of-window rejections.
+
+Throughput sanity check: 1,716,664 bytes in 19.28 s = 89 KB/s against a
+theoretical 100 KB/s for 1 Mbaud 8-N-1, the shortfall being host-side
+inter-byte gaps.
 
 ### Latency — measured
 
@@ -179,36 +213,43 @@ handing a validated event to the dispatcher — to the first `feat_valid` that
 event produces. This deliberately excludes the transport, so it characterises
 the core rather than whatever happens to be feeding it.
 
-Measured over 1,592 events of real ITCH data at 100 MHz:
+Measured **on the FPGA** over 31,756 events of real ITCH data at 100 MHz:
 
 | | Cycles | Time |
 |---|---|---|
 | min | 13 | **130 ns** |
-| mean | 15 | **150 ns** |
+| mean | 15.3 | **153 ns** |
 | max | 18 | **180 ns** |
 
 Stage breakdown: `resolve` 7 · `book2tob` **5** · `tob2feat` **1**.
 
 Those last two are fixed-latency chains with no data dependence, so the probe
 doubles as an online assertion — both constants were derived from the RTL
-*before* measuring, and any other value would be a bug rather than a result. A
-second cross-check falls out for free: the probe counted **237 events that
-produced no feature**, which is exactly 229 out-of-window drops + 8 order-table
-misses.
+*before* anything was measured, and any other value would be a bug rather than
+a result. They came back as 5 and 1 in simulation, and again as 5 and 1 on
+silicon.
 
 The probe is observation-only — four taps, no handshake, no back-pressure.
 Removing it cannot change the datapath, and the differential test passes
 identically with it wired in.
 
-### Not yet measured
+### Core versus transport, both measured
 
-One claim this project does **not** make yet, stated explicitly because
-overclaiming is worse than a gap:
+The probe also records the interval between consecutive events, which under
+UART *is* the transport cost — so both halves of the comparison come from the
+same chip, the same run and the same clock, rather than one measured and one
+asserted:
 
-- **The differential and latency results are simulation-based, not
-  hardware-verified.** The design has been brought up on an AX7A200B and emits
-  frames over UART, but no board capture with recorded provenance has been
-  diffed against the golden model at the current bitstream's calibration.
+| | Measured |
+|---|---|
+| core, event → feature | **153 ns** |
+| transport, minimum interarrival | **207.9 µs** |
+| ratio | **~1,363×** |
+
+This is why no end-to-end number appears anywhere in this README. On this
+bitstream an end-to-end measurement would be a measurement of the UART. The
+core figure is bracketed deliberately so it stays true of the pipeline whatever
+transport is eventually attached.
 
 ---
 
@@ -249,9 +290,24 @@ then `launch_runs synth_1 -jobs 8` and `launch_runs impl_1 -jobs 8`.
 py hardware/ax7a200b/src/itch_tools.py calibrate <itch-file> --ticker AAPL
 ```
 
-Set the resulting parameters on `top_board`, rebuild, then replay a capture
-over the USB-UART at 1 Mbaud with `src/uart_feed.py`. LED2 blinking confirms
-the clock is alive and reset released; LED3 flashes per received byte.
+Set the resulting parameters on `top_board`, rebuild, program, then:
+
+```bash
+# press the RESET button (F15) first - see below - then:
+py src/uart_feed.py --port COM4 --baud 1000000 \
+   --send aapl_50000.bin --recv-csv hw_50k.csv --golden golden_aapl_50000_fresh.csv
+```
+
+LED3 (K14) blinking at ~1.5 Hz confirms the clock is alive and reset released;
+LED4 (K13) flashes per received byte; LED2 (M13) lights only if the input FIFO
+ever overran.
+
+> **Press RESET between replays.** The counters accumulate from reset *and the
+> order book keeps its state*, so a second replay starts with the previous
+> run's liquidity still resting. Every feature then disagrees with the golden
+> model in a way that looks exactly like an RTL bug. `uart_feed.py` now detects
+> this by comparing the FPGA's `msg` count against the number of messages it
+> sent, and says so instead of printing thousands of diffs.
 
 ---
 
